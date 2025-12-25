@@ -1,0 +1,75 @@
+# Image Processing Pipeline Configuration
+
+# Image Processing Parameters
+image_processing:
+  target_width: 224
+  target_height: 224
+  color_space: "RGB" # Options: RGB, GRAYSCALE
+  normalization:
+    method: "min_max" # Options: min_max, z_score, none
+    min_value: 0.0
+    max_value: 1.0
+
+  # Data Augmentation Settings
+  augmentation:
+    enabled: true
+    rotation_range: 15 # degrees
+    horizontal_flip: true
+    vertical_flip: false
+    brightness_range: [0.8, 1.2]
+    augmentation_factor: 2 # Number of augmented versions per image
+
+  # Denoising Settings
+  denoising:
+    enabled: false
+    method: "gaussian" # Options: gaussian, median, none
+    kernel_size: 3
+
+  # Feature Extraction (for classical ML)
+  feature_extraction:
+    enabled: false
+    methods: ["histogram"] # Options: histogram, edges, texture
+
+  # Batch Settings
+  batching:
+    batch_size: 32
+    shuffle: true
+    seed: 42
+
+# Data Splits
+data_splits:
+  train: 0.7
+  validation: 0.15
+  test: 0.15
+  preserve_existing_splits: true # Use existing train/val/test folders
+
+# Label Encoding
+label_encoding:
+  NORMAL: 0
+  PNEUMONIA: 1
+
+# Output Formats
+output_formats:
+  tfrecord:
+    enabled: true
+    compression: "GZIP"
+    shard_size_mb: 100
+
+  parquet:
+    enabled: true
+    compression: "snappy"
+    row_group_size_mb: 128
+
+# Data Versioning
+versioning:
+  version_tag: "v1.0"
+  metadata_file: "metadata.json"
+  track_parameters: true
+  track_statistics: true
+
+# Processing Configuration
+processing:
+  num_partitions: 200 # Spark partitions for parallel processing
+  executor_memory: "4g"
+  driver_memory: "2g"
+  max_result_size: "2g"

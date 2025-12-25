@@ -1,0 +1,11 @@
+# DVC Configuration
+# This file will be generated/updated when you run: dvc remote add -d gcs-remote gs://YOUR_BUCKET/dvc
+
+[core]
+    remote = gcs-remote
+
+['remote "gcs-remote"']
+    url = gs://YOUR_PROJECT_ID-chest-xray-dvc
+    # Use service account key if needed
+    # credentialpath = path/to/service-account-key.json
+

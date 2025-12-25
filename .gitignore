@@ -1,0 +1,93 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+
+# GCP credentials
+*.json
+!package.json
+!package-lock.json
+service-account-key.json
+credentials.json
+gcp-key.json
+
+# Config files with secrets
+config/gcp_config.yaml
+*.key
+
+# Airflow
+airflow.cfg
+airflow.db
+unittests.cfg
+
+# DVC
+.dvc/cache
+.dvc/tmp
+
+# Data (large files)
+data/
+data/raw/
+data/processed/
+*.jpeg
+*.jpg
+*.png
+*.tfrecord
+*.parquet
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
