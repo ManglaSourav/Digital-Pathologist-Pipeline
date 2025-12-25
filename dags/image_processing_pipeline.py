@@ -9,6 +9,8 @@ from airflow.providers.google.cloud.operators.dataproc import (
     DataprocCreateClusterOperator,
     DataprocDeleteClusterOperator,
     DataprocSubmitJobOperator,
+    DataprocStartClusterOperator,
+    DataprocStopClusterOperator,
 )
 from airflow.providers.google.cloud.operators.gcs import (
     GCSListObjectsOperator,
@@ -150,6 +152,38 @@ def run_dvc_versioning(**context):
     return "\n".join(commands)
 
 
+def check_cluster_exists(**context):
+    """Check if Dataproc cluster exists and return its state."""
+    from google.cloud import dataproc_v1
+
+    project_id = Variable.get("gcp_project_id", default_var="")
+    region = Variable.get("gcp_region", default_var="us-central1")
+    cluster_name = Variable.get(
+        "dataproc_cluster_name", default_var="chest-xray-processing-cluster")
+
+    if not project_id:
+        return {"exists": False, "state": None}
+
+    try:
+        cluster_client = dataproc_v1.ClusterControllerClient(
+            client_options={
+                "api_endpoint": f"{region}-dataproc.googleapis.com:443"}
+        )
+
+        cluster_path = f"projects/{project_id}/regions/{region}/clusters/{cluster_name}"
+        cluster = cluster_client.get_cluster(request={"name": cluster_path})
+
+        return {
+            "exists": True,
+            "state": cluster.status.state.name if cluster.status else None
+        }
+    except Exception as e:
+        # Cluster doesn't exist or error accessing it
+        print(f"Cluster check result: {e}")
+        print("Will attempt to create cluster if it doesn't exist")
+        return {"exists": False, "state": None}
+
+
 # Create DAG
 with DAG(
     dag_id=dag_id,
@@ -194,7 +228,17 @@ with DAG(
         """,
     )
 
-    # Task 4: Create Dataproc Cluster
+    # Task 4: Check if cluster exists
+    check_cluster = PythonOperator(
+        task_id='check_cluster_exists',
+        python_callable=check_cluster_exists,
+        provide_context=True,
+    )
+
+    # Task 5: Create Dataproc Cluster
+    # Note: This will create the cluster if it doesn't exist.
+    # If cluster already exists, this task may fail, but the start_cluster task will handle it.
+    # For production, consider using a BranchPythonOperator to conditionally create.
     create_cluster = DataprocCreateClusterOperator(
         task_id='create_dataproc_cluster',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -226,16 +270,26 @@ with DAG(
                 }
             }
         },
+        # Only create if cluster doesn't exist (handled by check_cluster task)
     )
 
-    # Task 5: Prepare Job Configuration
+    # Task 6: Start Dataproc Cluster
+    start_cluster = DataprocStartClusterOperator(
+        task_id='start_dataproc_cluster',
+        project_id="{{ var.value.get('gcp_project_id', '') }}",
+        cluster_name="{{ var.value.get('dataproc_cluster_name', 'chest-xray-processing-cluster') }}",
+        region="{{ var.value.get('gcp_region', 'us-central1') }}",
+        # Will start cluster if it's stopped, or do nothing if already running
+    )
+
+    # Task 7: Prepare Job Configuration
     prepare_job = PythonOperator(
         task_id='prepare_dataproc_job',
         python_callable=prepare_dataproc_job,
         provide_context=True,
     )
 
-    # Task 6: Submit Dataproc Job
+    # Task 8: Submit Dataproc Job
     submit_job = DataprocSubmitJobOperator(
         task_id='submit_image_processing_job',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -265,7 +319,7 @@ with DAG(
         asynchronous=False,
     )
 
-    # Task 7: Validate Output
+    # Task 9: Validate Output
     validate_output = PythonOperator(
         task_id='validate_processed_output',
         python_callable=lambda **context: validate_gcs_upload(**context),
@@ -275,7 +329,7 @@ with DAG(
         }
     )
 
-    # Task 8: DVC Versioning
+    # Task 10: DVC Versioning
     dvc_versioning = BashOperator(
         task_id='dvc_versioning',
         bash_command="""
@@ -285,7 +339,17 @@ with DAG(
         """,
     )
 
-    # Task 9: Cleanup - Delete Dataproc Cluster
+    # Task 11: Stop Dataproc Cluster (to save costs, keep cluster for reuse)
+    stop_cluster = DataprocStopClusterOperator(
+        task_id='stop_dataproc_cluster',
+        project_id="{{ var.value.get('gcp_project_id', '') }}",
+        cluster_name="{{ var.value.get('dataproc_cluster_name', 'chest-xray-processing-cluster') }}",
+        region="{{ var.value.get('gcp_region', 'us-central1') }}",
+        trigger_rule='all_done',  # Stop even if previous tasks failed
+    )
+
+    # Task 12: Delete Dataproc Cluster (optional - set to skip if you want to keep cluster)
+    # Set this task to be skipped by default via Airflow UI if you want to reuse the cluster
     delete_cluster = DataprocDeleteClusterOperator(
         task_id='delete_dataproc_cluster',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -295,6 +359,21 @@ with DAG(
     )
 
     # Define task dependencies
-    validate_upload >> setup_buckets >> upload_scripts >> create_cluster
-    create_cluster >> prepare_job >> submit_job
-    submit_job >> validate_output >> dvc_versioning >> delete_cluster
+    # Pipeline flow:
+    # 1. Validate GCS upload
+    # 2. Setup/create GCS buckets
+    # 3. Upload processing scripts to GCS
+    # 4. Check if Dataproc cluster exists
+    # 5. Create cluster if it doesn't exist
+    # 6. Start cluster (will start if stopped, or do nothing if running)
+    # 7. Prepare job configuration
+    # 8. Submit image processing job
+    # 9. Validate processed output
+    # 10. DVC versioning
+    # 11. Stop cluster (to save costs, but keep it for reuse)
+    # 12. Delete cluster (optional - can be skipped in Airflow UI to keep cluster)
+
+    validate_upload >> setup_buckets >> upload_scripts >> check_cluster
+    check_cluster >> create_cluster >> start_cluster
+    start_cluster >> prepare_job >> submit_job
+    submit_job >> validate_output >> dvc_versioning >> stop_cluster >> delete_cluster
