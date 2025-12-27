@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, udf, lit, when, rand, explode, array, struct
+    col, udf
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType,

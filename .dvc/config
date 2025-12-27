@@ -1,0 +1,4 @@
+[core]
+    remote = gcs-remote
+['remote "gcs-remote"']
+    url = gs://copper-bot-481117-d1-chest-xray-dvc

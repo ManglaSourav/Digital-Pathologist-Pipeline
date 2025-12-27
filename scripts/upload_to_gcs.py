@@ -6,12 +6,49 @@ Uploads local image data to Google Cloud Storage with progress tracking.
 
 import os
 import sys
-import yaml
 from pathlib import Path
 from typing import Optional
-from google.cloud import storage
-from google.cloud.exceptions import GoogleCloudError
-from tqdm import tqdm
+
+# Check for required dependencies
+try:
+    import yaml
+except ImportError:
+    print("ERROR: Missing dependency 'pyyaml'. Install with: pip install pyyaml")
+    sys.exit(1)
+
+try:
+    from google.cloud import storage
+    from google.cloud.exceptions import GoogleCloudError
+except ImportError:
+    print("ERROR: Missing dependency 'google-cloud-storage'.")
+    print("Install with: pip install google-cloud-storage")
+    print("Or install all dependencies: pip install -r requirements.txt")
+    sys.exit(1)
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("WARNING: Missing dependency 'tqdm'. Progress bars will be disabled.")
+    print("Install with: pip install tqdm")
+    # Create a dummy tqdm that does nothing
+
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            self.total = kwargs.get('total', 0)
+            self.desc = kwargs.get('desc', '')
+
+        def update(self, n=1):
+            pass
+
+        def set_postfix(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
 import logging
 
 # Setup logging
