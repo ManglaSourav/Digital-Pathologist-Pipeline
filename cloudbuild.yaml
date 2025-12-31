@@ -116,8 +116,8 @@ steps:
 substitutions:
   _REGION: "us-central1"
   _COMPOSER_ENV: "chest-xray-composer"
-  _RAW_BUCKET: "" # Will default to gs://${PROJECT_ID}-chest-xray-raw
-  _PROCESSED_BUCKET: "" # Will default to gs://${PROJECT_ID}-chest-xray-processed
+  _RAW_BUCKET: ""
+  _PROCESSED_BUCKET: ""
   _DATAPROC_CLUSTER: "chest-xray-processing-cluster"
   _VERSION_TAG: "v1.0"
 
