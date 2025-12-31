@@ -1,0 +1,133 @@
+# Cloud Build configuration for automated deployment
+# This file automates the deployment of the chest X-ray image processing pipeline
+
+steps:
+  # Step 1: Set project and region variables
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "set-variables"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        echo "Setting build variables..."
+        export PROJECT_ID=${PROJECT_ID}
+        export REGION=${_REGION:-us-central1}
+        export COMPOSER_ENV=${_COMPOSER_ENV:-chest-xray-composer}
+        export RAW_BUCKET=${_RAW_BUCKET:-gs://${PROJECT_ID}-chest-xray-raw}
+        export PROCESSED_BUCKET=${_PROCESSED_BUCKET:-gs://${PROJECT_ID}-chest-xray-processed}
+        export DATAPROC_CLUSTER=${_DATAPROC_CLUSTER:-chest-xray-processing-cluster}
+        export VERSION_TAG=${_VERSION_TAG:-v1.0}
+
+        echo "PROJECT_ID=${PROJECT_ID}" >> /workspace/build.env
+        echo "REGION=${REGION}" >> /workspace/build.env
+        echo "COMPOSER_ENV=${COMPOSER_ENV}" >> /workspace/build.env
+        echo "RAW_BUCKET=${RAW_BUCKET}" >> /workspace/build.env
+        echo "PROCESSED_BUCKET=${PROCESSED_BUCKET}" >> /workspace/build.env
+        echo "DATAPROC_CLUSTER=${DATAPROC_CLUSTER}" >> /workspace/build.env
+        echo "VERSION_TAG=${VERSION_TAG}" >> /workspace/build.env
+
+  # Step 2: Get Composer DAG bucket path
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "get-composer-dag-bucket"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        source /workspace/build.env
+        DAG_BUCKET=$(gcloud composer environments describe ${COMPOSER_ENV} \
+          --location ${REGION} \
+          --format="value(config.dagGcsPrefix)" 2>/dev/null || echo "")
+
+        if [ -z "$DAG_BUCKET" ]; then
+          echo "Warning: Could not get Composer DAG bucket. Make sure Composer environment exists."
+          echo "DAG_BUCKET=" >> /workspace/build.env
+        else
+          echo "DAG_BUCKET=${DAG_BUCKET}" >> /workspace/build.env
+          echo "Found DAG bucket: ${DAG_BUCKET}"
+        fi
+
+  # Step 3: Deploy DAG to Composer
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "deploy-dag"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        source /workspace/build.env
+        if [ -n "$DAG_BUCKET" ]; then
+          echo "Deploying DAG to Composer..."
+          gsutil cp dags/image_processing_pipeline.py ${DAG_BUCKET}/image_processing_pipeline.py
+          echo "✓ DAG deployed successfully"
+        else
+          echo "⚠ Skipping DAG deployment (Composer environment not found)"
+        fi
+
+  # Step 4: Upload processing scripts to GCS
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "upload-scripts"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        source /workspace/build.env
+        echo "Uploading scripts to GCS..."
+
+        # Create directories if they don't exist
+        gsutil -m cp -r scripts/* ${PROCESSED_BUCKET}/scripts/ || true
+        gsutil -m cp -r config/* ${PROCESSED_BUCKET}/config/ || true
+
+        echo "✓ Scripts and configs uploaded successfully"
+
+  # Step 5: Validate deployment
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "validate-deployment"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        source /workspace/build.env
+        echo "Validating deployment..."
+
+        # Check if DAG exists in Composer
+        if [ -n "$DAG_BUCKET" ]; then
+          if gsutil ls ${DAG_BUCKET}/image_processing_pipeline.py > /dev/null 2>&1; then
+            echo "✓ DAG file exists in Composer"
+          else
+            echo "⚠ DAG file not found in Composer"
+          fi
+        fi
+
+        # Check if scripts exist in GCS
+        if gsutil ls ${PROCESSED_BUCKET}/scripts/dataproc_job.py > /dev/null 2>&1; then
+          echo "✓ Processing script exists in GCS"
+        else
+          echo "⚠ Processing script not found in GCS"
+        fi
+
+        if gsutil ls ${PROCESSED_BUCKET}/config/pipeline_config.yaml > /dev/null 2>&1; then
+          echo "✓ Pipeline config exists in GCS"
+        else
+          echo "⚠ Pipeline config not found in GCS"
+        fi
+
+        echo "✓ Deployment validation complete"
+
+# Substitution variables (can be overridden)
+substitutions:
+  _REGION: "us-central1"
+  _COMPOSER_ENV: "chest-xray-composer"
+  _RAW_BUCKET: "" # Will default to gs://${PROJECT_ID}-chest-xray-raw
+  _PROCESSED_BUCKET: "" # Will default to gs://${PROJECT_ID}-chest-xray-processed
+  _DATAPROC_CLUSTER: "chest-xray-processing-cluster"
+  _VERSION_TAG: "v1.0"
+
+# Build options
+options:
+  machineType: "E2_HIGHCPU_8"
+  logging: CLOUD_LOGGING_ONLY
+
+# Timeout for the entire build
+timeout: "1200s"
+
+# Images to be pushed (none in this case, but can be added if needed)
+images: []

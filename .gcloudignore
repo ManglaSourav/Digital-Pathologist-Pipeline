@@ -1,3 +1,5 @@
+# .gcloudignore - Files to exclude from Cloud Build context
+
 # Python
 __pycache__/
 *.py[cod]
@@ -24,7 +26,7 @@ wheels/
 venv/
 env/
 ENV/
-.venv
+.venv/
 venv*/
 
 # IDE
@@ -34,6 +36,7 @@ venv*/
 *.swo
 *.sublime-project
 *.sublime-workspace
+.cursor/
 
 # OS
 .DS_Store
@@ -47,27 +50,35 @@ logs/
 .env
 .env.local
 
-# GCP credentials
+# GCP credentials (never include these)
 *.json
 !package.json
 !package-lock.json
 service-account-key.json
 credentials.json
 gcp-key.json
+*-key.json
 
 # Config files with secrets
 config/gcp_config.yaml
-*.key
 
-# Airflow
+# Airflow local files
 airflow.cfg
 airflow.db
 unittests.cfg
 
-# Data (large files)
+# DVC
+.dvc/cache/
+.dvc/tmp/
+.dvc/state
+
+# Data (large files - exclude from build context)
 data/
 data/raw/
 data/processed/
+data/test/
+data/train/
+data/val/
 *.jpeg
 *.jpg
 *.png
@@ -87,4 +98,15 @@ temp/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Git
+.git/
+.gitignore
+
+# Documentation (optional - include if needed)
+# *.md
+# !README.md
+
+# Test files (optional - include if running tests in build)
+# tests/
 

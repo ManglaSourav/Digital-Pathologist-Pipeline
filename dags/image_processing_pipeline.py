@@ -6,16 +6,14 @@ Orchestrates the complete data pipeline from GCS upload to processed data versio
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.google.cloud.operators.dataproc import (
-    DataprocCreateClusterOperator,
-    DataprocDeleteClusterOperator,
     DataprocSubmitJobOperator,
     DataprocStartClusterOperator,
     DataprocStopClusterOperator,
 )
 from airflow.providers.google.cloud.operators.gcs import (
     GCSListObjectsOperator,
-    GCSCreateBucketOperator,
 )
+
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.utils.task_group import TaskGroup
@@ -46,18 +44,46 @@ schedule_interval = '@weekly'  # Run weekly, adjust as needed
 def load_config():
     """Load configuration from Airflow Variables or default."""
     try:
-        config_str = Variable.get("pipeline_config", default_var="{}")
-        return json.loads(config_str)
-    except:
-        # Default configuration
+        # Try to load from pipeline_config variable (JSON string)
+        config_str = Variable.get("pipeline_config", default_var=None)
+        if config_str and config_str != "{}":
+            return json.loads(config_str)
+    except Exception as e:
+        print(f"Could not load pipeline_config variable: {e}")
+
+    # Fallback: Load from individual Airflow Variables
+    try:
+        config = {
+            "gcp": {
+                "project_id": Variable.get("gcp_project_id", default_var=""),
+                "region": Variable.get("gcp_region", default_var="us-central1")
+            },
+            "gcs": {
+                "raw_bucket": Variable.get("raw_bucket", default_var=""),
+                "processed_bucket": Variable.get("processed_bucket", default_var="")
+            },
+            "dataproc": {
+                "cluster_name": Variable.get("dataproc_cluster_name", default_var="chest-xray-processing-cluster"),
+                "num_workers": int(Variable.get("dataproc_num_workers", default_var="2")),
+                "master_machine_type": Variable.get("dataproc_master_machine_type", default_var="n1-standard-4"),
+                "worker_machine_type": Variable.get("dataproc_worker_machine_type", default_var="n1-standard-4")
+            },
+            "versioning": {
+                "version_tag": Variable.get("version_tag", default_var="v1.0")
+            }
+        }
+        return config
+    except Exception as e:
+        print(f"Error loading individual variables: {e}")
+        # Ultimate fallback with empty values
         return {
             "gcp": {
-                "project_id": "{{ var.value.get('gcp_project_id', 'your-project-id') }}",
+                "project_id": "",
                 "region": "us-central1"
             },
             "gcs": {
-                "raw_bucket": "{{ var.value.get('raw_bucket', 'your-raw-bucket') }}",
-                "processed_bucket": "{{ var.value.get('processed_bucket', 'your-processed-bucket') }}"
+                "raw_bucket": "",
+                "processed_bucket": ""
             },
             "dataproc": {
                 "cluster_name": "chest-xray-processing-cluster",
@@ -74,20 +100,114 @@ def load_config():
 def validate_gcs_upload(**context):
     """Validate that raw images exist in GCS."""
     config = load_config()
-    raw_bucket = config.get("gcs", {}).get("raw_bucket", "")
+
+    # 1. Get the raw_bucket path
+    raw_bucket = config.get("gcs", {}).get("raw_bucket")
+
+    # 2. Safety check: If config is missing or raw_bucket is empty
+    if not raw_bucket:
+        print(f"configg: {config}")
+        raise ValueError(
+            "Configuration error: 'raw_bucket' is empty or not found in config.yaml")
+
     version_tag = config.get("versioning", {}).get("version_tag", "v1.0")
 
     client = storage.Client()
-    bucket_name = raw_bucket.replace("gs://", "").split("/")[0]
+
+    # 3. Robust parsing: handles 'gs://bucket-name', 'bucket-name', or 'gs://bucket-name/folder'
+    bucket_name = raw_bucket.replace("gs://", "").strip("/").split("/")[0]
+
+    if not bucket_name:
+        raise ValueError(f"Could not parse bucket name from: {raw_bucket}")
+
     bucket = client.bucket(bucket_name)
 
-    # Check if files exist
-    blobs = list(bucket.list_blobs(prefix=f"raw/{version_tag}/"))
-    if len(blobs) == 0:
-        raise ValueError(f"No images found in {raw_bucket}/raw/{version_tag}/")
+    # 4. Check if files exist
+    # Note: list_blobs is an iterator; using max_results prevents loading thousands of objects into memory
+    blobs = list(bucket.list_blobs(
+        prefix=f"raw/{version_tag}/", max_results=10))
 
-    print(f"Found {len(blobs)} files in raw bucket")
-    return len(blobs)
+    if len(blobs) == 0:
+        raise ValueError(
+            f"No images found in gs://{bucket_name}/raw/{version_tag}/. Please check your path.")
+
+    print(f"Validation successful. Found files starting with: {blobs[0].name}")
+    return True
+
+
+def validate_processed_output(**context):
+    """Validate that processed output exists in GCS."""
+    config = load_config()
+    processed_bucket = config.get("gcs", {}).get("processed_bucket", "")
+    version_tag = config.get("versioning", {}).get("version_tag", "v1.0")
+    print(f"processed_bucket: {processed_bucket}")
+    print(f"configg: {config}")
+
+    if not processed_bucket:
+        raise ValueError(
+            "Configuration error: 'processed_bucket' is empty or not found in config")
+
+    client = storage.Client()
+
+    # Construct the expected output path
+    output_path = f"{processed_bucket}/processed/{version_tag}"
+
+    # Parse bucket name and prefix
+    # Handle both 'gs://bucket/path' and 'bucket/path' formats
+    path_clean = output_path.replace("gs://", "").strip("/")
+    parts = path_clean.split("/", 1)
+    bucket_name = parts[0]
+    prefix = parts[1] if len(parts) > 1 else ""
+
+    if not bucket_name:
+        raise ValueError(f"Could not parse bucket name from: {output_path}")
+
+    bucket = client.bucket(bucket_name)
+
+    # Check for processed output files
+    # Look for parquet files, metadata.json, or tfrecords
+    print(f"Validating processed output in gs://{bucket_name}/{prefix}")
+
+    # Check for metadata.json (always created by the pipeline)
+    metadata_blob = bucket.blob(
+        f"{prefix}/metadata.json" if prefix else "metadata.json")
+    if metadata_blob.exists():
+        print(f"✓ Found metadata.json")
+        # Optionally validate metadata content
+        try:
+            metadata_content = metadata_blob.download_as_text()
+            metadata = json.loads(metadata_content)
+            processed_count = metadata.get("processed_images", 0)
+            print(f"✓ Processed images count: {processed_count}")
+        except Exception as e:
+            print(f"Warning: Could not parse metadata.json: {e}")
+
+    # Check for parquet files
+    parquet_prefix = f"{prefix}/parquet" if prefix else "parquet"
+    parquet_blobs = list(bucket.list_blobs(
+        prefix=parquet_prefix, max_results=5))
+    if len(parquet_blobs) > 0:
+        print(f"✓ Found {len(parquet_blobs)} parquet file(s)")
+    else:
+        print(f"⚠ No parquet files found in {parquet_prefix}")
+
+    # Check for tfrecord files (if enabled)
+    tfrecord_prefix = f"{prefix}/tfrecords" if prefix else "tfrecords"
+    tfrecord_blobs = list(bucket.list_blobs(
+        prefix=tfrecord_prefix, max_results=5))
+    if len(tfrecord_blobs) > 0:
+        print(f"✓ Found {len(tfrecord_blobs)} tfrecord file(s)")
+
+    # At minimum, we should have metadata.json or some output files
+    all_blobs = list(bucket.list_blobs(prefix=prefix, max_results=10))
+    if len(all_blobs) == 0:
+        raise ValueError(
+            f"No processed output found in gs://{bucket_name}/{prefix}. "
+            "The Dataproc job may have failed or produced no output.")
+
+    print(
+        f"✓ Validation successful. Found processed output in gs://{bucket_name}/{prefix}")
+    return True
 
 
 def prepare_dataproc_job(**context):
@@ -134,56 +254,6 @@ def prepare_dataproc_job(**context):
     return job_config
 
 
-def run_dvc_versioning(**context):
-    """Run DVC versioning step."""
-    config = load_config()
-    version_tag = config.get("versioning", {}).get("version_tag", "v1.0")
-    processed_bucket = config.get("gcs", {}).get("processed_bucket", "")
-
-    # DVC commands
-    commands = [
-        f"dvc add data/processed/{version_tag}",
-        f"dvc push",
-        f"git add data/processed/{version_tag}.dvc .dvc/config",
-        f"git commit -m 'Version {version_tag} processed data'",
-        f"git tag {version_tag}"
-    ]
-
-    return "\n".join(commands)
-
-
-def check_cluster_exists(**context):
-    """Check if Dataproc cluster exists and return its state."""
-    from google.cloud import dataproc_v1
-
-    project_id = Variable.get("gcp_project_id", default_var="")
-    region = Variable.get("gcp_region", default_var="us-central1")
-    cluster_name = Variable.get(
-        "dataproc_cluster_name", default_var="chest-xray-processing-cluster")
-
-    if not project_id:
-        return {"exists": False, "state": None}
-
-    try:
-        cluster_client = dataproc_v1.ClusterControllerClient(
-            client_options={
-                "api_endpoint": f"{region}-dataproc.googleapis.com:443"}
-        )
-
-        cluster_path = f"projects/{project_id}/regions/{region}/clusters/{cluster_name}"
-        cluster = cluster_client.get_cluster(request={"name": cluster_path})
-
-        return {
-            "exists": True,
-            "state": cluster.status.state.name if cluster.status else None
-        }
-    except Exception as e:
-        # Cluster doesn't exist or error accessing it
-        print(f"Cluster check result: {e}")
-        print("Will attempt to create cluster if it doesn't exist")
-        return {"exists": False, "state": None}
-
-
 # Create DAG
 with DAG(
     dag_id=dag_id,
@@ -191,7 +261,7 @@ with DAG(
     description='Chest X-ray Image Processing Pipeline with Data Versioning',
     schedule_interval=schedule_interval,
     catchup=False,
-    tags=['image-processing', 'dataproc', 'gcs', 'dvc'],
+    tags=['image-processing', 'dataproc', 'gcs'],
 ) as dag:
 
     # Task 1: Validate GCS Upload
@@ -202,22 +272,52 @@ with DAG(
     )
 
     # Task 2: Create/Verify GCS Buckets
-    with TaskGroup("setup_buckets") as setup_buckets:
-        create_raw_bucket = GCSCreateBucketOperator(
-            task_id='create_raw_bucket_if_not_exists',
-            bucket_name="{{ var.value.get('raw_bucket', '').replace('gs://', '').split('/')[0] }}",
-            project_id="{{ var.value.get('gcp_project_id', '') }}",
-            location="us-central1",
-            if_exists="ignore"
-        )
+    def setup_buckets_if_needed(**context):
+        """Create buckets if they don't exist."""
+        from google.cloud import storage
 
-        create_processed_bucket = GCSCreateBucketOperator(
-            task_id='create_processed_bucket_if_not_exists',
-            bucket_name="{{ var.value.get('processed_bucket', '').replace('gs://', '').split('/')[0] }}",
-            project_id="{{ var.value.get('gcp_project_id', '') }}",
-            location="us-central1",
-            if_exists="ignore"
-        )
+        # Get bucket names from Airflow Variables
+        raw_bucket = Variable.get("raw_bucket", default_var="")
+        processed_bucket = Variable.get("processed_bucket", default_var="")
+        region = Variable.get("gcp_region", default_var="us-central1")
+
+        raw_bucket_name = raw_bucket.replace(
+            "gs://", "").split("/")[0] if raw_bucket else ""
+        processed_bucket_name = processed_bucket.replace(
+            "gs://", "").split("/")[0] if processed_bucket else ""
+
+        client = storage.Client()
+
+        # Create raw bucket if it doesn't exist
+        if raw_bucket_name:
+            try:
+                bucket = client.bucket(raw_bucket_name)
+                if not bucket.exists():
+                    bucket.create(location=region)
+                    print(f"Created bucket: {raw_bucket_name}")
+                else:
+                    print(f"Bucket already exists: {raw_bucket_name}")
+            except Exception as e:
+                print(f"Error with raw bucket {raw_bucket_name}: {e}")
+
+        # Create processed bucket if it doesn't exist
+        if processed_bucket_name:
+            try:
+                bucket = client.bucket(processed_bucket_name)
+                if not bucket.exists():
+                    bucket.create(location=region)
+                    print(f"Created bucket: {processed_bucket_name}")
+                else:
+                    print(f"Bucket already exists: {processed_bucket_name}")
+            except Exception as e:
+                print(
+                    f"Error with processed bucket {processed_bucket_name}: {e}")
+
+    setup_buckets = PythonOperator(
+        task_id='setup_buckets',
+        python_callable=setup_buckets_if_needed,
+        provide_context=True,
+    )
 
     # Task 3: Upload Processing Scripts to GCS
     upload_scripts = BashOperator(
@@ -228,52 +328,8 @@ with DAG(
         """,
     )
 
-    # Task 4: Check if cluster exists
-    check_cluster = PythonOperator(
-        task_id='check_cluster_exists',
-        python_callable=check_cluster_exists,
-        provide_context=True,
-    )
-
-    # Task 5: Create Dataproc Cluster
-    # Note: This will create the cluster if it doesn't exist.
-    # If cluster already exists, this task may fail, but the start_cluster task will handle it.
-    # For production, consider using a BranchPythonOperator to conditionally create.
-    create_cluster = DataprocCreateClusterOperator(
-        task_id='create_dataproc_cluster',
-        project_id="{{ var.value.get('gcp_project_id', '') }}",
-        cluster_name="{{ var.value.get('dataproc_cluster_name', 'chest-xray-processing-cluster') }}",
-        region="{{ var.value.get('gcp_region', 'us-central1') }}",
-        cluster_config={
-            "master_config": {
-                "num_instances": 1,
-                "machine_type_uri": "n1-standard-4",
-                "disk_config": {
-                    "boot_disk_type": "pd-standard",
-                    "boot_disk_size_gb": 100
-                }
-            },
-            "worker_config": {
-                "num_instances": 2,
-                "machine_type_uri": "n1-standard-4",
-                "disk_config": {
-                    "boot_disk_type": "pd-standard",
-                    "boot_disk_size_gb": 100
-                }
-            },
-            "software_config": {
-                "image_version": "2.0-debian10",
-                "properties": {
-                    "spark:spark.executor.memory": "4g",
-                    "spark:spark.executor.cores": "2",
-                    "spark:spark.driver.memory": "2g"
-                }
-            }
-        },
-        # Only create if cluster doesn't exist (handled by check_cluster task)
-    )
-
-    # Task 6: Start Dataproc Cluster
+    # Task 4: Start Dataproc Cluster
+    # Note: Cluster must be created before running this DAG
     start_cluster = DataprocStartClusterOperator(
         task_id='start_dataproc_cluster',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -282,14 +338,14 @@ with DAG(
         # Will start cluster if it's stopped, or do nothing if already running
     )
 
-    # Task 7: Prepare Job Configuration
+    # Task 5: Prepare Job Configuration
     prepare_job = PythonOperator(
         task_id='prepare_dataproc_job',
         python_callable=prepare_dataproc_job,
         provide_context=True,
     )
 
-    # Task 8: Submit Dataproc Job
+    # Task 6: Submit Dataproc Job
     submit_job = DataprocSubmitJobOperator(
         task_id='submit_image_processing_job',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -319,27 +375,15 @@ with DAG(
         asynchronous=False,
     )
 
-    # Task 9: Validate Output
+    # Task 7: Validate Output
     validate_output = PythonOperator(
         task_id='validate_processed_output',
-        python_callable=lambda **context: validate_gcs_upload(**context),
+        python_callable=validate_processed_output,
         provide_context=True,
-        op_kwargs={
-            "bucket_path": "{{ var.value.get('processed_bucket', '') }}/processed/{{ var.value.get('version_tag', 'v1.0') }}"
-        }
     )
 
-    # Task 10: DVC Versioning
-    dvc_versioning = BashOperator(
-        task_id='dvc_versioning',
-        bash_command="""
-        cd /home/airflow/gcs/dags/chest_xray || cd /opt/airflow/dags/chest_xray || cd .
-        dvc add data/processed/{{ var.value.get('version_tag', 'v1.0') }} || echo "DVC not configured, skipping"
-        dvc push || echo "DVC push failed, check configuration"
-        """,
-    )
 
-    # Task 11: Stop Dataproc Cluster (to save costs, keep cluster for reuse)
+    # Task 8: Stop Dataproc Cluster (to save costs, keep cluster for reuse)
     stop_cluster = DataprocStopClusterOperator(
         task_id='stop_dataproc_cluster',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -348,32 +392,17 @@ with DAG(
         trigger_rule='all_done',  # Stop even if previous tasks failed
     )
 
-    # Task 12: Delete Dataproc Cluster (optional - set to skip if you want to keep cluster)
-    # Set this task to be skipped by default via Airflow UI if you want to reuse the cluster
-    delete_cluster = DataprocDeleteClusterOperator(
-        task_id='delete_dataproc_cluster',
-        project_id="{{ var.value.get('gcp_project_id', '') }}",
-        cluster_name="{{ var.value.get('dataproc_cluster_name', 'chest-xray-processing-cluster') }}",
-        region="{{ var.value.get('gcp_region', 'us-central1') }}",
-        trigger_rule='all_done',  # Delete even if previous tasks failed
-    )
 
     # Define task dependencies
     # Pipeline flow:
     # 1. Validate GCS upload
     # 2. Setup/create GCS buckets
     # 3. Upload processing scripts to GCS
-    # 4. Check if Dataproc cluster exists
-    # 5. Create cluster if it doesn't exist
-    # 6. Start cluster (will start if stopped, or do nothing if running)
-    # 7. Prepare job configuration
-    # 8. Submit image processing job
-    # 9. Validate processed output
-    # 10. DVC versioning
-    # 11. Stop cluster (to save costs, but keep it for reuse)
-    # 12. Delete cluster (optional - can be skipped in Airflow UI to keep cluster)
+    # 4. Start cluster (assumes cluster exists - create manually first)
+    # 5. Prepare job configuration
+    # 6. Submit image processing job
+    # 7. Validate processed output
+    # 8. Stop cluster (to save costs, but keep it for reuse)
 
-    validate_upload >> setup_buckets >> upload_scripts >> check_cluster
-    check_cluster >> create_cluster >> start_cluster
-    start_cluster >> prepare_job >> submit_job
-    submit_job >> validate_output >> dvc_versioning >> stop_cluster >> delete_cluster
+    validate_upload >> setup_buckets >> upload_scripts >> start_cluster
+    prepare_job >> submit_job >> validate_output >> stop_cluster

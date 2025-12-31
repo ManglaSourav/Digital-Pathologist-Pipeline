@@ -14,10 +14,6 @@ tensorflow>=2.12.0
 pandas>=2.0.0
 pyarrow>=12.0.0
 
-# Data Versioning
-dvc[gcs]>=3.0.0
-dvc-s3>=2.23.0  # Alternative if using S3
-
 # Configuration
 pyyaml>=6.0
 python-dotenv>=1.0.0
