@@ -404,5 +404,4 @@ with DAG(
     # 7. Validate processed output
     # 8. Stop cluster (to save costs, but keep it for reuse)
 
-    validate_upload >> setup_buckets >> upload_scripts >> start_cluster
-    prepare_job >> submit_job >> validate_output >> stop_cluster
+    validate_upload >> setup_buckets >> upload_scripts >> start_cluster >> prepare_job >> submit_job >> validate_output >> stop_cluster
