@@ -18,13 +18,13 @@ steps:
         export DATAPROC_CLUSTER=${_DATAPROC_CLUSTER:-chest-xray-processing-cluster}
         export VERSION_TAG=${_VERSION_TAG:-v1.0}
 
-        echo "PROJECT_ID=${PROJECT_ID}" >> /workspace/build.env
-        echo "REGION=${REGION}" >> /workspace/build.env
-        echo "COMPOSER_ENV=${COMPOSER_ENV}" >> /workspace/build.env
-        echo "RAW_BUCKET=${RAW_BUCKET}" >> /workspace/build.env
-        echo "PROCESSED_BUCKET=${PROCESSED_BUCKET}" >> /workspace/build.env
-        echo "DATAPROC_CLUSTER=${DATAPROC_CLUSTER}" >> /workspace/build.env
-        echo "VERSION_TAG=${VERSION_TAG}" >> /workspace/build.env
+        echo "PROJECT_ID=$${PROJECT_ID}" >> /workspace/build.env
+        echo "REGION=$${REGION}" >> /workspace/build.env
+        echo "COMPOSER_ENV=$${COMPOSER_ENV}" >> /workspace/build.env
+        echo "RAW_BUCKET=$${RAW_BUCKET}" >> /workspace/build.env
+        echo "PROCESSED_BUCKET=$${PROCESSED_BUCKET}" >> /workspace/build.env
+        echo "DATAPROC_CLUSTER=$${DATAPROC_CLUSTER}" >> /workspace/build.env
+        echo "VERSION_TAG=$${VERSION_TAG}" >> /workspace/build.env
 
   # Step 2: Get Composer DAG bucket path
   - name: "gcr.io/cloud-builders/gcloud"
@@ -34,16 +34,16 @@ steps:
       - "-c"
       - |
         source /workspace/build.env
-        DAG_BUCKET=$(gcloud composer environments describe ${COMPOSER_ENV} \
-          --location ${REGION} \
+        DAG_BUCKET=$$(gcloud composer environments describe $${COMPOSER_ENV} \
+          --location $${REGION} \
           --format="value(config.dagGcsPrefix)" 2>/dev/null || echo "")
 
-        if [ -z "$DAG_BUCKET" ]; then
+        if [ -z "$$DAG_BUCKET" ]; then
           echo "Warning: Could not get Composer DAG bucket. Make sure Composer environment exists."
           echo "DAG_BUCKET=" >> /workspace/build.env
         else
-          echo "DAG_BUCKET=${DAG_BUCKET}" >> /workspace/build.env
-          echo "Found DAG bucket: ${DAG_BUCKET}"
+          echo "DAG_BUCKET=$${DAG_BUCKET}" >> /workspace/build.env
+          echo "Found DAG bucket: $${DAG_BUCKET}"
         fi
 
   # Step 3: Deploy DAG to Composer
@@ -54,9 +54,9 @@ steps:
       - "-c"
       - |
         source /workspace/build.env
-        if [ -n "$DAG_BUCKET" ]; then
+        if [ -n "$$DAG_BUCKET" ]; then
           echo "Deploying DAG to Composer..."
-          gsutil cp dags/image_processing_pipeline.py ${DAG_BUCKET}/image_processing_pipeline.py
+          gsutil cp dags/image_processing_pipeline.py $${DAG_BUCKET}/image_processing_pipeline.py
           echo "✓ DAG deployed successfully"
         else
           echo "⚠ Skipping DAG deployment (Composer environment not found)"
@@ -73,8 +73,8 @@ steps:
         echo "Uploading scripts to GCS..."
 
         # Create directories if they don't exist
-        gsutil -m cp -r scripts/* ${PROCESSED_BUCKET}/scripts/ || true
-        gsutil -m cp -r config/* ${PROCESSED_BUCKET}/config/ || true
+        gsutil -m cp -r scripts/* $${PROCESSED_BUCKET}/scripts/ || true
+        gsutil -m cp -r config/* $${PROCESSED_BUCKET}/config/ || true
 
         echo "✓ Scripts and configs uploaded successfully"
 
@@ -89,8 +89,8 @@ steps:
         echo "Validating deployment..."
 
         # Check if DAG exists in Composer
-        if [ -n "$DAG_BUCKET" ]; then
-          if gsutil ls ${DAG_BUCKET}/image_processing_pipeline.py > /dev/null 2>&1; then
+        if [ -n "$$DAG_BUCKET" ]; then
+          if gsutil ls $${DAG_BUCKET}/image_processing_pipeline.py > /dev/null 2>&1; then
             echo "✓ DAG file exists in Composer"
           else
             echo "⚠ DAG file not found in Composer"
@@ -98,13 +98,13 @@ steps:
         fi
 
         # Check if scripts exist in GCS
-        if gsutil ls ${PROCESSED_BUCKET}/scripts/dataproc_job.py > /dev/null 2>&1; then
+        if gsutil ls $${PROCESSED_BUCKET}/scripts/dataproc_job.py > /dev/null 2>&1; then
           echo "✓ Processing script exists in GCS"
         else
           echo "⚠ Processing script not found in GCS"
         fi
 
-        if gsutil ls ${PROCESSED_BUCKET}/config/pipeline_config.yaml > /dev/null 2>&1; then
+        if gsutil ls $${PROCESSED_BUCKET}/config/pipeline_config.yaml > /dev/null 2>&1; then
           echo "✓ Pipeline config exists in GCS"
         else
           echo "⚠ Pipeline config not found in GCS"
