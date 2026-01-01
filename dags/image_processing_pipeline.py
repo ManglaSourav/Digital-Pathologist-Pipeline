@@ -10,13 +10,7 @@ from airflow.providers.google.cloud.operators.dataproc import (
     DataprocStartClusterOperator,
     DataprocStopClusterOperator,
 )
-from airflow.providers.google.cloud.operators.gcs import (
-    GCSListObjectsOperator,
-)
-
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
-from airflow.utils.task_group import TaskGroup
 from airflow.models import Variable
 import yaml
 import json
@@ -319,16 +313,7 @@ with DAG(
         provide_context=True,
     )
 
-    # Task 3: Upload Processing Scripts to GCS
-    upload_scripts = BashOperator(
-        task_id='upload_scripts_to_gcs',
-        bash_command="""
-        gsutil cp scripts/dataproc_job.py {{ var.value.get('processed_bucket', '') }}/scripts/dataproc_job.py
-        gsutil cp config/pipeline_config.yaml {{ var.value.get('processed_bucket', '') }}/config/pipeline_config.yaml
-        """,
-    )
-
-    # Task 4: Start Dataproc Cluster
+    # Task 3: Start Dataproc Cluster
     # Note: Cluster must be created before running this DAG
     start_cluster = DataprocStartClusterOperator(
         task_id='start_dataproc_cluster',
@@ -338,14 +323,14 @@ with DAG(
         # Will start cluster if it's stopped, or do nothing if already running
     )
 
-    # Task 5: Prepare Job Configuration
+    # Task 4: Prepare Job Configuration
     prepare_job = PythonOperator(
         task_id='prepare_dataproc_job',
         python_callable=prepare_dataproc_job,
         provide_context=True,
     )
 
-    # Task 6: Submit Dataproc Job
+    # Task 5: Submit Dataproc Job
     submit_job = DataprocSubmitJobOperator(
         task_id='submit_image_processing_job',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -375,7 +360,7 @@ with DAG(
         asynchronous=False,
     )
 
-    # Task 7: Validate Output
+    # Task 6: Validate Output
     validate_output = PythonOperator(
         task_id='validate_processed_output',
         python_callable=validate_processed_output,
@@ -383,7 +368,7 @@ with DAG(
     )
 
 
-    # Task 8: Stop Dataproc Cluster (to save costs, keep cluster for reuse)
+    # Task 7: Stop Dataproc Cluster (to save costs, keep cluster for reuse)
     stop_cluster = DataprocStopClusterOperator(
         task_id='stop_dataproc_cluster',
         project_id="{{ var.value.get('gcp_project_id', '') }}",
@@ -397,11 +382,11 @@ with DAG(
     # Pipeline flow:
     # 1. Validate GCS upload
     # 2. Setup/create GCS buckets
-    # 3. Upload processing scripts to GCS
-    # 4. Start cluster (assumes cluster exists - create manually first)
-    # 5. Prepare job configuration
-    # 6. Submit image processing job
-    # 7. Validate processed output
-    # 8. Stop cluster (to save costs, but keep it for reuse)
+    # 3. Start cluster (assumes cluster exists - create manually first)
+    #    Note: Scripts are uploaded by Cloud Build during deployment
+    # 4. Prepare job configuration
+    # 5. Submit image processing job
+    # 6. Validate processed output
+    # 7. Stop cluster (to save costs, but keep it for reuse)
 
-    validate_upload >> setup_buckets >> upload_scripts >> start_cluster >> prepare_job >> submit_job >> validate_output >> stop_cluster
+    validate_upload >> setup_buckets >> start_cluster >> prepare_job >> submit_job >> validate_output >> stop_cluster
