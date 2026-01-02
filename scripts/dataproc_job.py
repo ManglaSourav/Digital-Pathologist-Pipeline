@@ -276,8 +276,45 @@ def process_images_spark(
         "label_encoding", {"NORMAL": 0, "PNEUMONIA": 1})
 
     # Read images from GCS using binary file format
+    # Process all splits (train, val, test) and support multiple image formats
     print(f"Reading images from {raw_gcs_path}")
-    df = spark.read.format("binaryFile").load(f"{raw_gcs_path}/val/*/*.jpeg")
+    
+    # Load images from all splits (train, val, test) with multiple extensions
+    image_patterns = [
+        f"{raw_gcs_path}/train/*/*.jpeg",
+        f"{raw_gcs_path}/train/*/*.jpg",
+        f"{raw_gcs_path}/train/*/*.png",
+        f"{raw_gcs_path}/val/*/*.jpeg",
+        f"{raw_gcs_path}/val/*/*.jpg",
+        f"{raw_gcs_path}/val/*/*.png",
+        f"{raw_gcs_path}/test/*/*.jpeg",
+        f"{raw_gcs_path}/test/*/*.jpg",
+        f"{raw_gcs_path}/test/*/*.png",
+    ]
+    
+    # Read all image files
+    dfs = []
+    for pattern in image_patterns:
+        try:
+            df_part = spark.read.format("binaryFile").load(pattern)
+            # Check if dataframe has any rows (this triggers a small action)
+            row_count = df_part.count()
+            if row_count > 0:
+                dfs.append(df_part)
+                print(f"  Found {row_count} images matching pattern: {pattern}")
+        except Exception as e:
+            # Pattern might not exist, continue with other patterns
+            print(f"  No images found for pattern {pattern}: {e}")
+            continue
+    
+    if not dfs:
+        raise ValueError(f"No images found in {raw_gcs_path}. Please check the path and file extensions.")
+    
+    # Union all dataframes
+    df = dfs[0]
+    for df_part in dfs[1:]:
+        df = df.unionByName(df_part)
+    print(f"Total images loaded: {df.count()}")
 
     # Extract label from path
     def extract_label(path: str) -> int:
